@@ -26,6 +26,10 @@ crawls, stores it in DuckDB, and produces reusable reports on coverage, content,
     warclens hosts --site facebook.com
     warclens hosts --domain facebook.com
 
+#### Sort hosts report
+
+    warclens hosts --sort size
+
 #### Show hosts report for a status code
 
     warclens hosts --status 200
@@ -43,6 +47,10 @@ crawls, stores it in DuckDB, and produces reusable reports on coverage, content,
 
     warclens mime --site facebook.com
     warclens mime --domain facebook.com
+
+#### Sort media type report
+
+    warclens mime --sort records
 
 #### Show media type report for a status code
 
@@ -63,3 +71,7 @@ crawls, stores it in DuckDB, and produces reusable reports on coverage, content,
 
     warclens status --status 404
     warclens status --status 3xx
+
+#### Sort status code report
+
+    warclens status --sort status

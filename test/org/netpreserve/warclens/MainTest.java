@@ -119,6 +119,7 @@ class MainTest {
         try (WarcWriter writer = new WarcWriter(warcPath)) {
             writer.write(buildResponse("https://facebook.com/home", "text/html", "<html>home</html>"));
             writer.write(buildResponse("https://connect.facebook.com/script.js", "application/javascript", "alert(1)"));
+            writer.write(buildResponse("https://connect.facebook.com/script2.js", "application/javascript", "alert(2)"));
             writer.write(buildResponse("https://a.b.c.d.facebook.com/pixel.png", "image/png", "PNGDATA"));
             writer.write(buildResponse("https://example.com/other", "text/plain", "other"));
         }
@@ -131,6 +132,10 @@ class MainTest {
         assertTrue(siteHosts.stdout.contains("connect.facebook.com"));
         assertTrue(siteHosts.stdout.contains("a.b.c.d.facebook.com"));
         assertTrue(!siteHosts.stdout.contains("example.com"));
+
+        RunResult sortedByHost = runFromWorkingDir(tempDir, "hosts", "--site", "facebook.com", "--sort", "host");
+        assertEquals(0, sortedByHost.exitCode);
+        assertTrue(sortedByHost.stdout.indexOf("a.b.c.d.facebook.com") < sortedByHost.stdout.indexOf("connect.facebook.com"));
     }
 
     @Test

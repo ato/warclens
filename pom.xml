@@ -38,6 +38,12 @@
 
     <dependencies>
         <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>33.5.0-jre</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
             <groupId>org.netpreserve</groupId>
             <artifactId>jwarc</artifactId>
             <version>0.35.0</version>

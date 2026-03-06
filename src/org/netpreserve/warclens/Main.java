@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -260,7 +261,7 @@ public class Main {
     }
 
     private static int hostsReport(String[] args, PrintStream out, PrintStream err) throws SQLException {
-        ReportFilter filter = parseReportFilter(args, out, err, "hosts", true, true, true);
+        ReportFilter filter = parseReportFilter(args, out, err, "hosts", true, true, true, Set.of("host", "records", "pages", "size"), "records");
         if (filter == null) {
             return 1;
         }
@@ -277,7 +278,7 @@ public class Main {
                 "FROM records " +
                 "WHERE host IS NOT NULL";
         query += buildReportFilterClause(filter, " AND ");
-        query += " GROUP BY host ORDER BY records DESC, host ASC";
+        query += " GROUP BY host " + buildHostsOrderByClause(filter.sortBy);
 
         try (Connection conn = connect(false);
              PreparedStatement ps = conn.prepareStatement(query)) {
@@ -302,7 +303,7 @@ public class Main {
     }
 
     private static int mediaTypesReport(String[] args, PrintStream out, PrintStream err) throws SQLException {
-        ReportFilter filter = parseReportFilter(args, out, err, "mime", true, true, true);
+        ReportFilter filter = parseReportFilter(args, out, err, "mime", true, true, true, Set.of("mime", "records", "size"), "size");
         if (filter == null) {
             return 1;
         }
@@ -337,7 +338,7 @@ public class Main {
                              "SELECT a.media_type, a.records, a.size_bytes, t.total_records, t.total_size " +
                              "FROM agg a " +
                              "CROSS JOIN totals t " +
-                             "ORDER BY a.size_bytes DESC, a.records DESC, a.media_type ASC";
+                             buildMimeOrderByClause(filter.sortBy);
 
         try (Connection conn = connect(false);
              PreparedStatement ps = conn.prepareStatement(query)) {
@@ -377,7 +378,7 @@ public class Main {
     }
 
     private static int statusCodesReport(String[] args, PrintStream out, PrintStream err) throws SQLException {
-        ReportFilter filter = parseReportFilter(args, out, err, "status", true, true, true);
+        ReportFilter filter = parseReportFilter(args, out, err, "status", true, true, true, Set.of("status", "records", "size"), "records");
         if (filter == null) {
             return 1;
         }
@@ -405,7 +406,7 @@ public class Main {
                         "SELECT a.status, a.records, a.size_bytes, t.total_records, t.total_size " +
                         "FROM agg a " +
                         "CROSS JOIN totals t " +
-                        "ORDER BY a.records DESC, a.status ASC";
+                        buildStatusOrderByClause(filter.sortBy);
 
         try (Connection conn = connect(false);
              PreparedStatement ps = conn.prepareStatement(query)) {
@@ -492,23 +493,26 @@ public class Main {
             String command,
             boolean allowHost,
             boolean allowSite,
-            boolean allowStatus
+            boolean allowStatus,
+            Set<String> allowedSortFields,
+            String defaultSort
     ) {
         List<String> hosts = new ArrayList<>();
         List<String> domains = new ArrayList<>();
         List<StatusRange> statusRanges = new ArrayList<>();
+        String sortBy = defaultSort;
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
             switch (arg) {
                 case "--host" -> {
                     if (!allowHost) {
                         err.println("Unknown option: " + arg);
-                        printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                         return null;
                     }
                     if (i + 1 >= args.length) {
                         err.println("Missing value for --host");
-                        printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                         return null;
                     }
                     hosts.add(normalizeDomain(args[++i]));
@@ -516,12 +520,12 @@ public class Main {
                 case "--site", "--domain" -> {
                     if (!allowSite) {
                         err.println("Unknown option: " + arg);
-                        printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                         return null;
                     }
                     if (i + 1 >= args.length) {
                         err.println("Missing value for " + arg);
-                        printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                         return null;
                     }
                     domains.add(normalizeDomain(args[++i]));
@@ -529,12 +533,12 @@ public class Main {
                 case "--status" -> {
                     if (!allowStatus) {
                         err.println("Unknown option: " + arg);
-                        printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                         return null;
                     }
                     if (i + 1 >= args.length) {
                         err.println("Missing value for --status");
-                        printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                         return null;
                     }
                     try {
@@ -542,19 +546,61 @@ public class Main {
                         statusRanges.add(new StatusRange(parsed.low, parsed.high));
                     } catch (IllegalArgumentException e) {
                         err.println(e.getMessage());
-                        printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                         return null;
                     }
                 }
+                case "--sort" -> {
+                    if (i + 1 >= args.length) {
+                        err.println("Missing value for --sort");
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
+                        return null;
+                    }
+                    String value = args[++i].toLowerCase(Locale.ROOT);
+                    if (!allowedSortFields.contains(value)) {
+                        err.println("Invalid sort field: " + value);
+                        printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
+                        return null;
+                    }
+                    sortBy = value;
+                }
                 default -> {
                     err.println("Unknown option: " + arg);
-                    printReportUsage(out, command, allowHost, allowSite, allowStatus);
+                    printReportUsage(out, command, allowHost, allowSite, allowStatus, allowedSortFields);
                     return null;
                 }
             }
         }
 
-        return new ReportFilter(hosts, domains, statusRanges);
+        return new ReportFilter(hosts, domains, statusRanges, sortBy);
+    }
+
+    private static String buildHostsOrderByClause(String sortBy) {
+        return switch (sortBy) {
+            case "host" -> "ORDER BY host ASC";
+            case "pages" -> "ORDER BY pages DESC, host ASC";
+            case "size" -> "ORDER BY size_bytes DESC, host ASC";
+            case "records" -> "ORDER BY records DESC, host ASC";
+            default -> throw new IllegalArgumentException("Unsupported hosts sort: " + sortBy);
+        };
+    }
+
+    private static String buildMimeOrderByClause(String sortBy) {
+        return switch (sortBy) {
+            case "mime" -> "ORDER BY a.media_type ASC";
+            case "records" -> "ORDER BY a.records DESC, a.media_type ASC";
+            case "size" -> "ORDER BY a.size_bytes DESC, a.records DESC, a.media_type ASC";
+            default -> throw new IllegalArgumentException("Unsupported mime sort: " + sortBy);
+        };
+    }
+
+    private static String buildStatusOrderByClause(String sortBy) {
+        return switch (sortBy) {
+            case "status" -> "ORDER BY a.status ASC";
+            case "size" -> "ORDER BY a.size_bytes DESC, a.records DESC, a.status ASC";
+            case "records" -> "ORDER BY a.records DESC, a.status ASC";
+            default -> throw new IllegalArgumentException("Unsupported status sort: " + sortBy);
+        };
     }
 
     private static StatusFilter parseStatusFilterArg(String rawValue) {
@@ -628,20 +674,20 @@ public class Main {
     private static void printUsage(PrintStream out) {
         out.println("Usage:");
         out.println("  warclens init [warc files]");
-        out.println("  warclens hosts [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]...");
+        out.println("  warclens hosts [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort host|records|pages|size]");
         printMediaTypesUsage(out);
         printStatusCodesUsage(out);
     }
 
     private static void printMediaTypesUsage(PrintStream out) {
-        out.println("  warclens mime [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]...");
+        out.println("  warclens mime [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort mime|records|size]");
     }
 
     private static void printStatusCodesUsage(PrintStream out) {
-        out.println("  warclens status [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]...");
+        out.println("  warclens status [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort status|records|size]");
     }
 
-    private static void printReportUsage(PrintStream out, String command, boolean allowHost, boolean allowSite, boolean allowStatus) {
+    private static void printReportUsage(PrintStream out, String command, boolean allowHost, boolean allowSite, boolean allowStatus, Set<String> allowedSortFields) {
         StringBuilder usage = new StringBuilder("  warclens ").append(command);
         if (allowHost && allowSite) {
             usage.append(" [--host HOST]... [--domain DOMAIN]...");
@@ -653,6 +699,7 @@ public class Main {
         if (allowStatus) {
             usage.append(" [--status CODE|Nxx]...");
         }
+        usage.append(" [--sort ").append(String.join("|", allowedSortFields)).append("]");
         out.println(usage);
     }
 
@@ -676,7 +723,7 @@ public class Main {
         }
     }
 
-    private record ReportFilter(List<String> hosts, List<String> domains, List<StatusRange> statusRanges) {
+    private record ReportFilter(List<String> hosts, List<String> domains, List<StatusRange> statusRanges, String sortBy) {
     }
 
     private record StatusFilter(int low, int high) {
