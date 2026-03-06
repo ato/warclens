@@ -341,6 +341,7 @@ public class Main {
         }
 
         String query = "SELECT domain, COUNT(*) AS records, " +
+                "COUNT(DISTINCT host) AS hosts, " +
                 "SUM(CASE WHEN lower(mime) = 'text/html' THEN 1 ELSE 0 END) AS pages, " +
                 "COALESCE(SUM(size_bytes), 0) AS size_bytes " +
                 "FROM records " +
@@ -353,13 +354,14 @@ public class Main {
             bindReportFilter(ps, filter, 1);
             try (ResultSet rs = ps.executeQuery()) {
                 int rows = 0;
-                out.printf("%-40s %10s %10s %12s%n", "DOMAIN", "RECORDS", "PAGES", "SIZE");
+                out.printf("%-40s %10s %10s %10s %12s%n", "DOMAIN", "RECORDS", "HOSTS", "PAGES", "SIZE");
                 while (rs.next()) {
                     String domain = rs.getString("domain");
                     long records = rs.getLong("records");
+                    long hosts = rs.getLong("hosts");
                     long pages = rs.getLong("pages");
                     long sizeBytes = rs.getLong("size_bytes");
-                    out.printf("%-40s %10d %10d %12s%n", domain, records, pages, humanReadableBytes(sizeBytes));
+                    out.printf("%-40s %10d %10d %10d %12s%n", domain, records, hosts, pages, humanReadableBytes(sizeBytes));
                     rows++;
                 }
                 if (rows == 0) {
