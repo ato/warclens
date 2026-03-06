@@ -31,6 +31,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 
 public class Main {
     private static final String DB_FILENAME = "warclens.duckdb";
@@ -120,11 +124,18 @@ public class Main {
         }
 
         int parallelism = Math.max(1, Math.min(warcPaths.size(), Runtime.getRuntime().availableProcessors()));
+        ImportProgress progress = new ImportProgress(out, warcPaths.size());
+        ScheduledExecutorService progressTicker = Executors.newSingleThreadScheduledExecutor();
+        progressTicker.scheduleAtFixedRate(progress::printSnapshot, 2, 2, TimeUnit.SECONDS);
+
+        try {
         if (parallelism == 1) {
             long total = 0;
             for (Path path : warcPaths) {
-                total += importSingleWarc(path);
+                total += importSingleWarc(path, progress);
             }
+            progress.finish();
+            progress.printSnapshot();
             out.println("Imported " + total + " records.");
             return 0;
         }
@@ -133,7 +144,7 @@ public class Main {
         try {
             List<Future<Long>> futures = new ArrayList<>();
             for (Path path : warcPaths) {
-                futures.add(pool.submit(new ImportTask(path)));
+                futures.add(pool.submit(new ImportTask(path, progress)));
             }
             long total = 0;
             for (Future<Long> future : futures) {
@@ -156,18 +167,23 @@ public class Main {
                     throw new IOException("Import failed", cause);
                 }
             }
+            progress.finish();
+            progress.printSnapshot();
             out.println("Imported " + total + " records.");
         } finally {
             pool.shutdownNow();
         }
         return 0;
+        } finally {
+            progressTicker.shutdownNow();
+        }
     }
 
-    private static long importSingleWarc(Path path) throws IOException, SQLException {
+    private static long importSingleWarc(Path path, ImportProgress progress) throws IOException, SQLException {
         try (Connection conn = connect(false)) {
             conn.setAutoCommit(false);
             try (PreparedStatement ps = conn.prepareStatement(INSERT_SQL)) {
-                long total = importWarc(path, ps);
+                long total = importWarc(path, ps, progress);
                 conn.commit();
                 return total;
             } catch (IOException | RuntimeException e) {
@@ -177,7 +193,7 @@ public class Main {
         }
     }
 
-    private static long importWarc(Path path, PreparedStatement ps) throws IOException, SQLException {
+    private static long importWarc(Path path, PreparedStatement ps, ImportProgress progress) throws IOException, SQLException {
         if (!Files.exists(path)) {
             throw new IOException("File not found: " + path);
         }
@@ -265,6 +281,8 @@ public class Main {
                 ps.executeBatch();
             }
         }
+        progress.addRecords(count);
+        progress.fileCompleted();
         return count;
     }
 
@@ -786,14 +804,58 @@ public class Main {
 
     private static final class ImportTask implements Callable<Long> {
         private final Path path;
+        private final ImportProgress progress;
 
-        private ImportTask(Path path) {
+        private ImportTask(Path path, ImportProgress progress) {
             this.path = path;
+            this.progress = progress;
         }
 
         @Override
         public Long call() throws Exception {
-            return importSingleWarc(path);
+            return importSingleWarc(path, progress);
+        }
+    }
+
+    private static final class ImportProgress {
+        private final PrintStream out;
+        private final int totalFiles;
+        private final long startedAtNanos;
+        private final LongAdder records = new LongAdder();
+        private final AtomicInteger completedFiles = new AtomicInteger();
+        private volatile boolean finished;
+
+        private ImportProgress(PrintStream out, int totalFiles) {
+            this.out = out;
+            this.totalFiles = totalFiles;
+            this.startedAtNanos = System.nanoTime();
+        }
+
+        private void addRecords(long count) {
+            records.add(count);
+        }
+
+        private void fileCompleted() {
+            completedFiles.incrementAndGet();
+        }
+
+        private void finish() {
+            finished = true;
+        }
+
+        private void printSnapshot() {
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
+            long recordCount = records.sum();
+            double recordsPerSecond = elapsedMillis <= 0 ? 0.0 : (recordCount * 1000.0) / elapsedMillis;
+            String status = finished ? "final" : "progress";
+            out.printf(
+                    "Import %s: %,d records, %d/%d files, %.1f rec/s%n",
+                    status,
+                    recordCount,
+                    completedFiles.get(),
+                    totalFiles,
+                    recordsPerSecond
+            );
         }
     }
 
