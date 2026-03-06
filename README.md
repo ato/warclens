@@ -30,6 +30,14 @@ crawls, stores it in DuckDB, and produces reusable reports on coverage, content,
 
     warclens hosts --sort size
 
+#### Show domains report
+
+    warclens domains
+
+#### Sort domains report
+
+    warclens domains --sort domain
+
 #### Show hosts report for a status code
 
     warclens hosts --status 200

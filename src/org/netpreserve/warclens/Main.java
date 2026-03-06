@@ -1,5 +1,6 @@
 package org.netpreserve.warclens;
 
+import com.google.common.net.InternetDomainName;
 import org.netpreserve.jwarc.HttpResponse;
 import org.netpreserve.jwarc.WarcReader;
 import org.netpreserve.jwarc.WarcRecord;
@@ -35,8 +36,8 @@ public class Main {
     private static final String DB_FILENAME = "warclens.duckdb";
     private static final int IMPORT_BATCH_SIZE = 10_000;
     private static final String INSERT_SQL =
-            "INSERT INTO records (url, host, status, mime, size_bytes, warc_offset, warc_type, fetch_time, warc_filename) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            "INSERT INTO records (url, host, domain, status, mime, size_bytes, warc_offset, warc_type, fetch_time, warc_filename) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     public static void main(String[] args) {
         System.exit(run(args, System.out, System.err));
@@ -52,6 +53,7 @@ public class Main {
             return switch (args[0]) {
                 case "init" -> init(sliceArgs(args, 1), out, err);
                 case "hosts" -> hostsReport(sliceArgs(args, 1), out, err);
+                case "domains", "domain" -> domainsReport(sliceArgs(args, 1), out, err);
                 case "mime", "media-types", "media" -> mediaTypesReport(sliceArgs(args, 1), out, err);
                 case "status", "status-codes" -> statusCodesReport(sliceArgs(args, 1), out, err);
                 default -> {
@@ -81,6 +83,7 @@ public class Main {
             stmt.execute("CREATE TABLE IF NOT EXISTS records (" +
                     "url VARCHAR, " +
                     "host VARCHAR, " +
+                    "domain VARCHAR, " +
                     "status INTEGER, " +
                     "mime VARCHAR, " +
                     "size_bytes BIGINT, " +
@@ -91,6 +94,7 @@ public class Main {
                     ")");
             stmt.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS size_bytes BIGINT");
             stmt.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS warc_offset BIGINT");
+            stmt.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS domain VARCHAR");
         }
     }
 
@@ -184,12 +188,15 @@ public class Main {
             for (WarcRecord record : reader) {
                 String url = null;
                 String host = null;
+                String domain = null;
                 if (record instanceof WarcTargetRecord targetRecord) {
                     url = targetRecord.target();
                     try {
                         host = targetRecord.targetURI().getHost();
+                        domain = topPrivateDomainOrHost(host);
                     } catch (IllegalArgumentException e) {
                         host = null;
+                        domain = null;
                     }
                 }
 
@@ -222,29 +229,30 @@ public class Main {
 
                 ps.setString(1, url);
                 ps.setString(2, host);
+                ps.setString(3, domain);
                 if (status == null) {
-                    ps.setNull(3, java.sql.Types.INTEGER);
+                    ps.setNull(4, java.sql.Types.INTEGER);
                 } else {
-                    ps.setInt(3, status);
+                    ps.setInt(4, status);
                 }
-                ps.setString(4, mime);
+                ps.setString(5, mime);
                 if (sizeBytes == null) {
-                    ps.setNull(5, java.sql.Types.BIGINT);
-                } else {
-                    ps.setLong(5, sizeBytes);
-                }
-                if (warcOffset == null) {
                     ps.setNull(6, java.sql.Types.BIGINT);
                 } else {
-                    ps.setLong(6, warcOffset);
+                    ps.setLong(6, sizeBytes);
                 }
-                ps.setString(7, warcType);
-                if (fetchTime == null) {
-                    ps.setNull(8, java.sql.Types.TIMESTAMP);
+                if (warcOffset == null) {
+                    ps.setNull(7, java.sql.Types.BIGINT);
                 } else {
-                    ps.setTimestamp(8, fetchTime);
+                    ps.setLong(7, warcOffset);
                 }
-                ps.setString(9, filename);
+                ps.setString(8, warcType);
+                if (fetchTime == null) {
+                    ps.setNull(9, java.sql.Types.TIMESTAMP);
+                } else {
+                    ps.setTimestamp(9, fetchTime);
+                }
+                ps.setString(10, filename);
                 ps.addBatch();
                 count++;
                 pendingBatchRows++;
@@ -296,6 +304,48 @@ public class Main {
                 }
                 if (rows == 0) {
                     out.println("(no host data)");
+                }
+            }
+        }
+        return 0;
+    }
+
+    private static int domainsReport(String[] args, PrintStream out, PrintStream err) throws SQLException {
+        ReportFilter filter = parseReportFilter(args, out, err, "domains", true, true, true, Set.of("domain", "records", "pages", "size"), "records");
+        if (filter == null) {
+            return 1;
+        }
+
+        Path dbPath = databasePath();
+        if (!Files.exists(dbPath)) {
+            err.println("Database not found: " + DB_FILENAME + ". Run 'warclens init' first.");
+            return 1;
+        }
+
+        String query = "SELECT domain, COUNT(*) AS records, " +
+                "SUM(CASE WHEN lower(mime) = 'text/html' THEN 1 ELSE 0 END) AS pages, " +
+                "COALESCE(SUM(size_bytes), 0) AS size_bytes " +
+                "FROM records " +
+                "WHERE domain IS NOT NULL";
+        query += buildReportFilterClause(filter, " AND ");
+        query += " GROUP BY domain " + buildDomainsOrderByClause(filter.sortBy);
+
+        try (Connection conn = connect(false);
+             PreparedStatement ps = conn.prepareStatement(query)) {
+            bindReportFilter(ps, filter, 1);
+            try (ResultSet rs = ps.executeQuery()) {
+                int rows = 0;
+                out.printf("%-40s %10s %10s %12s%n", "DOMAIN", "RECORDS", "PAGES", "SIZE");
+                while (rs.next()) {
+                    String domain = rs.getString("domain");
+                    long records = rs.getLong("records");
+                    long pages = rs.getLong("pages");
+                    long sizeBytes = rs.getLong("size_bytes");
+                    out.printf("%-40s %10d %10d %12s%n", domain, records, pages, humanReadableBytes(sizeBytes));
+                    rows++;
+                }
+                if (rows == 0) {
+                    out.println("(no domain data)");
                 }
             }
         }
@@ -603,6 +653,16 @@ public class Main {
         };
     }
 
+    private static String buildDomainsOrderByClause(String sortBy) {
+        return switch (sortBy) {
+            case "domain" -> "ORDER BY domain ASC";
+            case "pages" -> "ORDER BY pages DESC, domain ASC";
+            case "size" -> "ORDER BY size_bytes DESC, domain ASC";
+            case "records" -> "ORDER BY records DESC, domain ASC";
+            default -> throw new IllegalArgumentException("Unsupported domains sort: " + sortBy);
+        };
+    }
+
     private static StatusFilter parseStatusFilterArg(String rawValue) {
         String value = Objects.requireNonNull(rawValue, "rawValue").trim().toLowerCase(Locale.ROOT);
         if (value.matches("[0-9]xx")) {
@@ -637,6 +697,19 @@ public class Main {
             domain = domain.substring(0, domain.length() - 1);
         }
         return domain;
+    }
+
+    private static String topPrivateDomainOrHost(String host) {
+        if (host == null) {
+            return null;
+        }
+        String normalized = normalizeDomain(host);
+        try {
+            InternetDomainName idn = InternetDomainName.from(normalized);
+            return idn.topPrivateDomain().toString();
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return normalized;
+        }
     }
 
     private static String humanReadableBytes(long bytes) {
@@ -675,6 +748,7 @@ public class Main {
         out.println("Usage:");
         out.println("  warclens init [warc files]");
         out.println("  warclens hosts [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort host|records|pages|size]");
+        out.println("  warclens domains [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort domain|records|pages|size]");
         printMediaTypesUsage(out);
         printStatusCodesUsage(out);
     }

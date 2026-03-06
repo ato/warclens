@@ -139,6 +139,29 @@ class MainTest {
     }
 
     @Test
+    void domainsReportAggregatesByTopPrivateDomain(@TempDir Path tempDir) throws IOException {
+        Path warcPath = tempDir.resolve("domains-sample.warc.gz");
+        try (WarcWriter writer = new WarcWriter(warcPath)) {
+            writer.write(buildResponse("https://facebook.com/home", "text/html", "<html>home</html>"));
+            writer.write(buildResponse("https://connect.facebook.com/script.js", "application/javascript", "alert(1)"));
+            writer.write(buildResponse("https://a.b.c.d.facebook.com/pixel.png", "image/png", "PNGDATA"));
+            writer.write(buildResponse("https://example.com/other", "text/plain", "other"));
+        }
+
+        assertEquals(0, runFromWorkingDir(tempDir, "init", warcPath.toString()).exitCode);
+
+        RunResult domains = runFromWorkingDir(tempDir, "domains");
+        assertEquals(0, domains.exitCode);
+        assertTrue(domains.stdout.contains("DOMAIN"));
+        assertTrue(domains.stdout.matches("(?s).*facebook\\.com\\s+3\\s+1\\s+\\S+\\s+[BKMGTPE].*"));
+        assertTrue(domains.stdout.matches("(?s).*example\\.com\\s+1\\s+0\\s+\\S+\\s+[BKMGTPE].*"));
+
+        RunResult sortedByDomain = runFromWorkingDir(tempDir, "domains", "--sort", "domain");
+        assertEquals(0, sortedByDomain.exitCode);
+        assertTrue(sortedByDomain.stdout.indexOf("example.com") < sortedByDomain.stdout.indexOf("facebook.com"));
+    }
+
+    @Test
     void statusCodesReportAndFilters(@TempDir Path tempDir) throws IOException {
         Path warcPath = tempDir.resolve("status-sample.warc.gz");
         try (WarcWriter writer = new WarcWriter(warcPath)) {
