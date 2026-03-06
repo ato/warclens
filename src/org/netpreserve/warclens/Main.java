@@ -893,15 +893,48 @@ public class Main {
             long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
             long recordCount = records.sum();
             double recordsPerSecond = elapsedMillis <= 0 ? 0.0 : (recordCount * 1000.0) / elapsedMillis;
+            int doneFiles = completedFiles.get();
+            int remainingFiles = Math.max(0, totalFiles - doneFiles);
+            String eta = estimateEta(elapsedMillis, doneFiles, remainingFiles);
             String status = finished ? "final" : "progress";
             out.printf(
-                    "Import %s: %,d records, %d/%d files, %.1f rec/s%n",
+                    "Import %s: %,d records, %d/%d files, %.1f rec/s, eta %s%n",
                     status,
                     recordCount,
-                    completedFiles.get(),
+                    doneFiles,
                     totalFiles,
-                    recordsPerSecond
+                    recordsPerSecond,
+                    eta
             );
+        }
+
+        private static String estimateEta(long elapsedMillis, int doneFiles, int remainingFiles) {
+            if (remainingFiles == 0) {
+                return "0s";
+            }
+            if (elapsedMillis <= 0 || doneFiles <= 0) {
+                return "?";
+            }
+            double filesPerMs = doneFiles / (double) elapsedMillis;
+            if (filesPerMs <= 0.0) {
+                return "?";
+            }
+            long etaMillis = (long) Math.ceil(remainingFiles / filesPerMs);
+            return formatDurationSeconds(Math.max(1, (etaMillis + 999) / 1000));
+        }
+
+        private static String formatDurationSeconds(long seconds) {
+            if (seconds < 60) {
+                return seconds + "s";
+            }
+            long minutes = seconds / 60;
+            long secs = seconds % 60;
+            if (minutes < 60) {
+                return String.format("%dm%02ds", minutes, secs);
+            }
+            long hours = minutes / 60;
+            long mins = minutes % 60;
+            return String.format("%dh%02dm%02ds", hours, mins, secs);
         }
     }
 
