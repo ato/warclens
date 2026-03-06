@@ -223,7 +223,7 @@ public class Main {
                 String mime = null;
                 Long sizeBytes = null;
                 Boolean cfChallenge = null;
-                if (record instanceof WarcResponse response) {
+                if (record instanceof WarcResponse response && isHttpOrHttpsTarget(response.target())) {
                     try {
                         HttpResponse http = response.http();
                         status = http.status();
@@ -754,6 +754,13 @@ public class Main {
             domain = domain.substring(0, domain.length() - 1);
         }
         return domain;
+    }
+
+    private static boolean isHttpOrHttpsTarget(String target) {
+        if (target == null) {
+            return false;
+        }
+        return target.startsWith("http:") || target.startsWith("https:");
     }
 
     private static String topPrivateDomainOrHost(String host) {
