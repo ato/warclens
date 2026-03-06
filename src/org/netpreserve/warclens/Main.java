@@ -203,6 +203,7 @@ public class Main {
         long count = 0;
         int pendingBatchRows = 0;
         try (WarcReader reader = new WarcReader(path)) {
+            String filename = path.getFileName().toString();
             for (WarcRecord record : reader) {
                 String url = null;
                 String host = null;
@@ -229,7 +230,27 @@ public class Main {
                         mime = http.contentType().base().toString();
                         sizeBytes = http.body().size();
                         cfChallenge = status == 403 && http.headers().contains("cf-mitigated", "challenge");
-                    } catch (IOException e) {
+                    } catch (Exception e) {
+                        long recordPosition;
+                        try {
+                            recordPosition = record.position();
+                        } catch (UnsupportedOperationException ignored) {
+                            recordPosition = -1;
+                        }
+                        if (recordPosition >= 0) {
+                            System.err.printf(
+                                    "Warning: failed to parse HTTP response in %s at record position %d: %s%n",
+                                    filename,
+                                    recordPosition,
+                                    e.getMessage()
+                            );
+                        } else {
+                            System.err.printf(
+                                    "Warning: failed to parse HTTP response in %s at unknown record position: %s%n",
+                                    filename,
+                                    e.getMessage()
+                            );
+                        }
                         status = null;
                         mime = null;
                         sizeBytes = null;
@@ -246,7 +267,6 @@ public class Main {
                 } catch (UnsupportedOperationException e) {
                     warcOffset = null;
                 }
-                String filename = path.getFileName().toString();
 
                 ps.setString(1, url);
                 ps.setString(2, host);
