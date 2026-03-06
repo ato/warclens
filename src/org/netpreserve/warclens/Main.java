@@ -40,8 +40,8 @@ public class Main {
     private static final String DB_FILENAME = "warclens.duckdb";
     private static final int IMPORT_BATCH_SIZE = 10_000;
     private static final String INSERT_SQL =
-            "INSERT INTO records (url, host, domain, status, mime, size_bytes, warc_offset, warc_type, fetch_time, warc_filename) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            "INSERT INTO records (url, host, domain, status, mime, size_bytes, warc_offset, cf_challenge, warc_type, fetch_time, warc_filename) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     public static void main(String[] args) {
         System.exit(run(args, System.out, System.err));
@@ -92,6 +92,7 @@ public class Main {
                     "mime VARCHAR, " +
                     "size_bytes BIGINT, " +
                     "warc_offset BIGINT, " +
+                    "cf_challenge BOOLEAN, " +
                     "warc_type VARCHAR, " +
                     "fetch_time TIMESTAMP, " +
                     "warc_filename VARCHAR" +
@@ -99,6 +100,7 @@ public class Main {
             stmt.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS size_bytes BIGINT");
             stmt.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS warc_offset BIGINT");
             stmt.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS domain VARCHAR");
+            stmt.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS cf_challenge BOOLEAN");
         }
     }
 
@@ -219,16 +221,19 @@ public class Main {
                 Integer status = null;
                 String mime = null;
                 Long sizeBytes = null;
+                Boolean cfChallenge = null;
                 if (record instanceof WarcResponse response) {
                     try {
                         HttpResponse http = response.http();
                         status = http.status();
                         mime = http.contentType().base().toString();
                         sizeBytes = http.body().size();
+                        cfChallenge = status == 403 && http.headers().contains("cf-mitigated", "challenge");
                     } catch (IOException e) {
                         status = null;
                         mime = null;
                         sizeBytes = null;
+                        cfChallenge = null;
                     }
                 }
 
@@ -262,13 +267,18 @@ public class Main {
                 } else {
                     ps.setLong(7, warcOffset);
                 }
-                ps.setString(8, warcType);
-                if (fetchTime == null) {
-                    ps.setNull(9, java.sql.Types.TIMESTAMP);
+                if (cfChallenge == null) {
+                    ps.setNull(8, java.sql.Types.BOOLEAN);
                 } else {
-                    ps.setTimestamp(9, fetchTime);
+                    ps.setBoolean(8, cfChallenge);
                 }
-                ps.setString(10, filename);
+                ps.setString(9, warcType);
+                if (fetchTime == null) {
+                    ps.setNull(10, java.sql.Types.TIMESTAMP);
+                } else {
+                    ps.setTimestamp(10, fetchTime);
+                }
+                ps.setString(11, filename);
                 ps.addBatch();
                 count++;
                 pendingBatchRows++;
@@ -287,7 +297,7 @@ public class Main {
     }
 
     private static int hostsReport(String[] args, PrintStream out, PrintStream err) throws SQLException {
-        ReportFilter filter = parseReportFilter(args, out, err, "hosts", true, true, true, Set.of("host", "records", "pages", "size"), "records");
+        ReportFilter filter = parseReportFilter(args, out, err, "hosts", true, true, true, Set.of("host", "records", "pages", "challenges", "size"), "records");
         if (filter == null) {
             return 1;
         }
@@ -300,6 +310,7 @@ public class Main {
 
         String query = "SELECT host, COUNT(*) AS records, " +
                 "SUM(CASE WHEN lower(mime) = 'text/html' THEN 1 ELSE 0 END) AS pages, " +
+                "SUM(CASE WHEN cf_challenge THEN 1 ELSE 0 END) AS challenges, " +
                 "COALESCE(SUM(size_bytes), 0) AS size_bytes " +
                 "FROM records " +
                 "WHERE host IS NOT NULL";
@@ -311,13 +322,14 @@ public class Main {
             bindReportFilter(ps, filter, 1);
             try (ResultSet rs = ps.executeQuery()) {
                 int rows = 0;
-                out.printf("%-40s %10s %10s %12s%n", "HOST", "RECORDS", "PAGES", "SIZE");
+                out.printf("%-40s %10s %10s %12s %12s%n", "HOST", "RECORDS", "PAGES", "CHALLENGES", "SIZE");
                 while (rs.next()) {
                     String host = rs.getString("host");
                     long records = rs.getLong("records");
                     long pages = rs.getLong("pages");
+                    long challenges = rs.getLong("challenges");
                     long sizeBytes = rs.getLong("size_bytes");
-                    out.printf("%-40s %10d %10d %12s%n", host, records, pages, humanReadableBytes(sizeBytes));
+                    out.printf("%-40s %10d %10d %12d %12s%n", host, records, pages, challenges, humanReadableBytes(sizeBytes));
                     rows++;
                 }
                 if (rows == 0) {
@@ -329,7 +341,7 @@ public class Main {
     }
 
     private static int domainsReport(String[] args, PrintStream out, PrintStream err) throws SQLException {
-        ReportFilter filter = parseReportFilter(args, out, err, "domains", true, true, true, Set.of("domain", "records", "pages", "size"), "records");
+        ReportFilter filter = parseReportFilter(args, out, err, "domains", true, true, true, Set.of("domain", "records", "hosts", "pages", "challenges", "size"), "records");
         if (filter == null) {
             return 1;
         }
@@ -343,6 +355,7 @@ public class Main {
         String query = "SELECT domain, COUNT(*) AS records, " +
                 "COUNT(DISTINCT host) AS hosts, " +
                 "SUM(CASE WHEN lower(mime) = 'text/html' THEN 1 ELSE 0 END) AS pages, " +
+                "SUM(CASE WHEN cf_challenge THEN 1 ELSE 0 END) AS challenges, " +
                 "COALESCE(SUM(size_bytes), 0) AS size_bytes " +
                 "FROM records " +
                 "WHERE domain IS NOT NULL";
@@ -354,14 +367,15 @@ public class Main {
             bindReportFilter(ps, filter, 1);
             try (ResultSet rs = ps.executeQuery()) {
                 int rows = 0;
-                out.printf("%-40s %10s %10s %10s %12s%n", "DOMAIN", "RECORDS", "HOSTS", "PAGES", "SIZE");
+                out.printf("%-40s %10s %10s %10s %12s %12s%n", "DOMAIN", "RECORDS", "HOSTS", "PAGES", "CHALLENGES", "SIZE");
                 while (rs.next()) {
                     String domain = rs.getString("domain");
                     long records = rs.getLong("records");
                     long hosts = rs.getLong("hosts");
                     long pages = rs.getLong("pages");
+                    long challenges = rs.getLong("challenges");
                     long sizeBytes = rs.getLong("size_bytes");
-                    out.printf("%-40s %10d %10d %10d %12s%n", domain, records, hosts, pages, humanReadableBytes(sizeBytes));
+                    out.printf("%-40s %10d %10d %10d %12d %12s%n", domain, records, hosts, pages, challenges, humanReadableBytes(sizeBytes));
                     rows++;
                 }
                 if (rows == 0) {
@@ -649,6 +663,7 @@ public class Main {
         return switch (sortBy) {
             case "host" -> "ORDER BY host ASC";
             case "pages" -> "ORDER BY pages DESC, host ASC";
+            case "challenges" -> "ORDER BY challenges DESC, host ASC";
             case "size" -> "ORDER BY size_bytes DESC, host ASC";
             case "records" -> "ORDER BY records DESC, host ASC";
             default -> throw new IllegalArgumentException("Unsupported hosts sort: " + sortBy);
@@ -676,7 +691,9 @@ public class Main {
     private static String buildDomainsOrderByClause(String sortBy) {
         return switch (sortBy) {
             case "domain" -> "ORDER BY domain ASC";
+            case "hosts" -> "ORDER BY hosts DESC, domain ASC";
             case "pages" -> "ORDER BY pages DESC, domain ASC";
+            case "challenges" -> "ORDER BY challenges DESC, domain ASC";
             case "size" -> "ORDER BY size_bytes DESC, domain ASC";
             case "records" -> "ORDER BY records DESC, domain ASC";
             default -> throw new IllegalArgumentException("Unsupported domains sort: " + sortBy);
@@ -767,8 +784,8 @@ public class Main {
     private static void printUsage(PrintStream out) {
         out.println("Usage:");
         out.println("  warclens init [warc files]");
-        out.println("  warclens hosts [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort host|records|pages|size]");
-        out.println("  warclens domains [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort domain|records|pages|size]");
+        out.println("  warclens hosts [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort host|records|pages|challenges|size]");
+        out.println("  warclens domains [--host HOST]... [--domain DOMAIN]... [--status CODE|Nxx]... [--sort domain|records|hosts|pages|challenges|size]");
         printMediaTypesUsage(out);
         printStatusCodesUsage(out);
     }

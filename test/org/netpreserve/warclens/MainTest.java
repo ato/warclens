@@ -44,9 +44,10 @@ class MainTest {
         assertEquals(0, hostsResult.exitCode);
         assertTrue(hostsResult.stdout.contains("HOST"));
         assertTrue(hostsResult.stdout.contains("PAGES"));
+        assertTrue(hostsResult.stdout.contains("CHALLENGES"));
         assertTrue(hostsResult.stdout.contains("SIZE"));
-        assertTrue(hostsResult.stdout.matches("(?s).*example.org\\s+2\\s+1\\s+\\S+\\s+B.*"));
-        assertTrue(hostsResult.stdout.matches("(?s).*other.example\\s+1\\s+1\\s+\\S+\\s+B.*"));
+        assertTrue(hostsResult.stdout.matches("(?s).*example.org\\s+2\\s+1\\s+0\\s+\\S+\\s+B.*"));
+        assertTrue(hostsResult.stdout.matches("(?s).*other.example\\s+1\\s+1\\s+0\\s+\\S+\\s+B.*"));
         assertTrue(hostsResult.stdout.indexOf("example.org") < hostsResult.stdout.indexOf("other.example"));
     }
 
@@ -154,12 +155,36 @@ class MainTest {
         assertEquals(0, domains.exitCode);
         assertTrue(domains.stdout.contains("DOMAIN"));
         assertTrue(domains.stdout.contains("HOSTS"));
-        assertTrue(domains.stdout.matches("(?s).*facebook\\.com\\s+3\\s+3\\s+1\\s+\\S+\\s+[BKMGTPE].*"));
-        assertTrue(domains.stdout.matches("(?s).*example\\.com\\s+1\\s+1\\s+0\\s+\\S+\\s+[BKMGTPE].*"));
+        assertTrue(domains.stdout.contains("CHALLENGES"));
+        assertTrue(domains.stdout.matches("(?s).*facebook\\.com\\s+3\\s+3\\s+1\\s+0\\s+\\S+\\s+[BKMGTPE].*"));
+        assertTrue(domains.stdout.matches("(?s).*example\\.com\\s+1\\s+1\\s+0\\s+0\\s+\\S+\\s+[BKMGTPE].*"));
 
         RunResult sortedByDomain = runFromWorkingDir(tempDir, "domains", "--sort", "domain");
         assertEquals(0, sortedByDomain.exitCode);
         assertTrue(sortedByDomain.stdout.indexOf("example.com") < sortedByDomain.stdout.indexOf("facebook.com"));
+    }
+
+    @Test
+    void hostsAndDomainsReportCloudflareChallenges(@TempDir Path tempDir) throws IOException {
+        Path warcPath = tempDir.resolve("cf-sample.warc.gz");
+        try (WarcWriter writer = new WarcWriter(warcPath)) {
+            writer.write(buildResponse("https://a.example.com/challenge", 403, "text/html", "<html>blocked</html>", "cf-mitigated", "challenge"));
+            writer.write(buildResponse("https://b.example.com/challenge", 403, "text/html", "<html>blocked</html>", "cf-mitigated", "challenge"));
+            writer.write(buildResponse("https://c.example.com/forbidden", 403, "text/html", "<html>forbidden</html>"));
+            writer.write(buildResponse("https://d.other.com/challenge", 403, "text/html", "<html>blocked</html>", "cf-mitigated", "challenge"));
+        }
+
+        assertEquals(0, runFromWorkingDir(tempDir, "init", warcPath.toString()).exitCode);
+
+        RunResult hosts = runFromWorkingDir(tempDir, "hosts", "--sort", "challenges");
+        assertEquals(0, hosts.exitCode);
+        assertTrue(hosts.stdout.matches("(?s).*a\\.example\\.com\\s+1\\s+1\\s+1\\s+\\S+\\s+[BKMGTPE].*"));
+        assertTrue(hosts.stdout.matches("(?s).*c\\.example\\.com\\s+1\\s+1\\s+0\\s+\\S+\\s+[BKMGTPE].*"));
+
+        RunResult domains = runFromWorkingDir(tempDir, "domains", "--sort", "challenges");
+        assertEquals(0, domains.exitCode);
+        assertTrue(domains.stdout.matches("(?s).*example\\.com\\s+3\\s+3\\s+3\\s+2\\s+\\S+\\s+[BKMGTPE].*"));
+        assertTrue(domains.stdout.matches("(?s).*other\\.com\\s+1\\s+1\\s+1\\s+1\\s+\\S+\\s+[BKMGTPE].*"));
     }
 
     @Test
@@ -266,10 +291,19 @@ class MainTest {
     }
 
     private static WarcResponse buildResponse(String url, int status, String contentType, String bodyText) throws IOException {
-        HttpResponse httpResponse = new HttpResponse.Builder(status, "OK")
-                .setHeader("Content-Type", contentType)
-                .body(null, bodyText.getBytes(StandardCharsets.UTF_8))
-                .build();
+        return buildResponse(url, status, contentType, bodyText, new String[0]);
+    }
+
+    private static WarcResponse buildResponse(String url, int status, String contentType, String bodyText, String... extraHeaders) throws IOException {
+        if (extraHeaders.length % 2 != 0) {
+            throw new IllegalArgumentException("extraHeaders must be name/value pairs");
+        }
+        HttpResponse.Builder builder = new HttpResponse.Builder(status, "OK")
+                .setHeader("Content-Type", contentType);
+        for (int i = 0; i < extraHeaders.length; i += 2) {
+            builder.setHeader(extraHeaders[i], extraHeaders[i + 1]);
+        }
+        HttpResponse httpResponse = builder.body(null, bodyText.getBytes(StandardCharsets.UTF_8)).build();
         return new WarcResponse.Builder(url).body(httpResponse).build();
     }
 
