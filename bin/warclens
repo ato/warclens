@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${SOURCE}" ]]; do
+  DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+  LINK_TARGET="$(readlink "${SOURCE}")"
+  if [[ "${LINK_TARGET}" != /* ]]; then
+    SOURCE="${DIR}/${LINK_TARGET}"
+  else
+    SOURCE="${LINK_TARGET}"
+  fi
+done
+SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CLASSPATH_FILE="${ROOT_DIR}/target/classpath.txt"
+
+if [[ ! -f "${CLASSPATH_FILE}" ]]; then
+  mvn -q -f "${ROOT_DIR}/pom.xml" -DskipTests dependency:build-classpath -Dmdep.outputFile="${CLASSPATH_FILE}" >/dev/null
+fi
+
+mvn -q -f "${ROOT_DIR}/pom.xml" -DskipTests compile >/dev/null
+
+CLASSPATH="$(cat "${CLASSPATH_FILE}"):${ROOT_DIR}/target/classes"
+exec java --enable-native-access=ALL-UNNAMED -cp "${CLASSPATH}" org.netpreserve.warclens.Main "$@"
